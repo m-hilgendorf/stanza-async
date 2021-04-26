@@ -1,35 +1,35 @@
 #use-added-syntax(tests)
-defpackage stz/promise/test:
+defpackage promises/test:
   import core
   import collections
-  import stz/promise
+  import promises
 
 deftest pend-then-resolve:
-  val promise = 
-    within promise = make-promise():
+  val awaitable = 
+    within promise = awaitable():
       pend(promise)
       resolve(promise, "fulfilled")
-  #ASSERT(poll(promise) is PromisePending)
+  val promise = make-promise(awaitable)
   #ASSERT(poll(promise) is PromisePending)
   val result = poll(promise) as PromiseResolved
   #ASSERT(value(result) as String == "fulfilled")
 
 deftest thrown-exception-is-rejected:
-  val promise = 
-    within promise = make-promise():
+  val awaitable = 
+    within promise = awaitable():
       throw(Exception("Promise rejected"))
-  #ASSERT(poll(promise) is PromisePending)
+  val promise = make-promise(awaitable)
   #ASSERT(poll(promise) is PromiseRejected)
 
 deftest async-await-sanity-check:
-  val p1 =
+  val inner =
     within await = async():
       "hello, async"
-  val p2 = 
+
+  val outer = 
     within await = async():
-      #ASSERT(await(p1) == "hello, async")
+      #ASSERT(await(inner) as String == "hello, async")
   
-  #ASSERT(poll(p2) is PromisePending)
-  #ASSERT(poll(p2) is PromisePending)
-  #ASSERT(poll(p2) is PromiseResolved)
+  val promise = make-promise(outer)
+  #ASSERT(poll(promise) is PromiseResolved)
   

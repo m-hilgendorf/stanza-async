@@ -1,2 +1,2 @@
-package stz/promise      defined-in "promise.stanza"
-package stz/promise/test defined-in "tests.stanza"
+package promises      defined-in "promise.stanza"
+package promises/test defined-in "tests.stanza"

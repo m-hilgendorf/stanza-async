@@ -1,62 +1,137 @@
-defpackage stz/promise:
+defpackage promises:
   import core
   import collections
 
+;==============================================================================
+; Promises
+;==============================================================================
+; The PromiseState type represents the state of a promise, either resolved, 
+; rejected, or pending.
+;
 public deftype PromiseState
-
 public defstruct PromiseResolved <: PromiseState:
   value:?
-
-public defstruct PromiseRejected <: PromiseState:
-  error:Exception
-
+public defstruct PromiseRejected <: PromiseState: 
+  value:Exception
 public defstruct PromisePending <: PromiseState
 
-defmethod print (o:OutputStream, p:PromiseState):
-  match(p):
-    (_:PromisePending):  print(o, "Promise Pending")
-    (r:PromiseResolved): print(o, "Resolved: %_" % [value(r)])
-    (r:PromiseRejected): print(o, "Rejected: %_" % [error(r)])
+; A promise is a value that will be available in the future
+public deftype Promise
 
-public defstruct Promise:
-  coroutine: Coroutine<False, PromiseState>
+; An implementer will define this function to resolve a promise. Since any
+; subsequent code will never be called, it must return Void.
+public defmulti resolve (promise:Promise, value:?) -> Void
 
-public defn resolve (p:Promise, value:?) -> Void:
-  break(coroutine(p), PromiseResolved(value))
+; An implementer will define this function to reject a promise. It is equivalent
+; to `throw (Exception)`. It must not return.
+public defmulti reject (promse:Promise, value:Exception) -> Void
 
-public defn reject (p:Promise, error:Exception) -> Void:
-  break(coroutine(p), PromiseRejected(error))
+; Promises may be polled to inquire about their current state.
+public defmulti poll (promise:Promise) -> PromiseState
 
-public defn poll (p:Promise) -> PromiseState:
-  resume(coroutine(p), false)
+; Promises may be "pend"ed, meaning their state is updated to PromisePending(). An
+; implementer or caller may use this method to suspend execution.
+public defmulti pend (promise:Promise) -> False
 
-public defn pend (p:Promise) -> False:
-  suspend(coroutine(p), PromisePending())
+; An Awaitable is a block of code that returns unknown type and takes a Promise as
+; an argument. It may only resolve or reject the promise.
+public defstruct Awaitable:
+  body: (Promise) -> ?
 
+
+;==============================================================================
+; Async/Await on top of promises
+;==============================================================================
+; The `async` function takes a block of code with a function as an argumnent. The 
+; function is the "awaiter", a function of the form `defn await (Awaitable) -> ?`. It
+; may be called on other Awaitables (blocks of asynchronous code)
+;
+; Usage:
+;
+; within await = async():
+;   val awaited = await(expression)
+;
+public defn async (async-body: ((Awaitable) -> ?) -> ?) -> Awaitable:
+  defn driver (outer-promise:Promise):
+    defn await (awaitable:Awaitable) -> ?:
+      label<?> return:
+        val inner-promise = new Promise:
+          defmethod pend (this):
+            pend(outer-promise)
+          defmethod resolve (this, value:?): 
+            return(value)
+          defmethod reject (this, value:Exception):
+            reject(outer-promise, value)
+        resolve(outer-promise, body(awaitable)(outer-promise))
+
+    async-body(await)
+  Awaitable(driver)
+
+; Convert an Awaitable into a promise so it may be polled. Should only be
+; called by executors
+public defn make-promise (awaitable:Awaitable):
+  make-promise(body(awaitable))
+
+; 
+; Convert a block of code that takes a promise as an argument into a promise
+; itself, which may be polled.
+; 
+; Usage:
+; 
+; val promise =
+;   within promise = make-promise():
+;     resolve(promise, "hello, world!")
+; 
+; let loop ():
+;   match(poll(promise)):
+;     (_:PromisePending): loop()
+;     (r:PromiseResolved|PromiseRejected): println(value(r))
+;
 public defn make-promise (body:(Promise) -> ?) -> Promise:
-  defn driver (coro:Coroutine<False, PromiseState>, arg):
-    val promise = Promise(coro)
+  defn driver (co:Coroutine<False, PromiseState>, _):
+    val promise = new Promise:
+      defmethod resolve (this, value:?):
+        break(co, PromiseResolved(value))
+      defmethod reject (this, value:Exception):
+        break(co, PromiseRejected(value))
+      defmethod pend (this) :
+        suspend(co, PromisePending())
     try:
-      pend(promise)
-      resolve(promise, body(promise))
-    catch (error:Exception):
-      reject(promise, error)
-  Promise(Coroutine<False, PromiseState>(driver))
-defn execute (promises:Seqable<Promise>):
-  var promises* = to-tuple(promises)
-  while not empty?(promises*):
-    promises* = to-tuple(filter({poll(_) is PromisePending}, promises*))
+      body(promise)
+    catch (e:Exception):
+      reject(promise, e)
+  val co = Coroutine<False, PromiseState>(driver)
+  new Promise:
+    defmethod poll (this):
+      resume(co, false)
 
-public defn async (body: ( (Promise) -> ? ) -> ?) -> Promise:
-  within promise = make-promise():
-    defn await (other-promise:Promise) -> ?:
-      let loop ():
-        match(poll(other-promise)):
-          (_:PromisePending):
-            pend(promise)
-            loop()
-          (r:PromiseRejected):
-            reject(promise, error(r))
-          (r:PromiseResolved):
-            value(r)
-    body(await)
+; Mark a block of code as awaitable.
+; Usage:
+; 
+; defn my-function () -> Awaitable:
+;  within promise = awaitable():
+;    pend(promise)
+;    resolve(promise, "some message")
+;
+public defn awaitable (body: (Promise) -> ?) -> Awaitable:
+  Awaitable(body)
+
+public defn execute (tasks:Seqable<Awaitable>):
+  var promises = to-tuple(seq(make-promise, tasks))
+  while not empty?(promises):
+    promises = to-tuple(filter({poll(_) is PromisePending}, promises))
+
+public defn call-system-async (program:String, args:Tuple<String>) -> Awaitable:
+  within promise = awaitable():
+    val process = Process(program, args)
+    let loop ():
+      match(state(process)):
+        (_:ProcessRunning):
+          pend(promise)
+          loop()
+        (r:ProcessDone):
+          resolve(promise, r)
+        (r:?):
+          reject(promise, Exception("%_" % [r])) 
+
+execute([call-system-async("sleep", ["sleep", "1"])])
