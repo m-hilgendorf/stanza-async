@@ -38,7 +38,6 @@ public defmulti pend (promise:Promise) -> False
 public defstruct Awaitable:
   body: (Promise) -> ?
 
-
 ;==============================================================================
 ; Async/Await on top of promises
 ;==============================================================================
@@ -121,17 +120,39 @@ public defn execute (tasks:Seqable<Awaitable>):
   while not empty?(promises):
     promises = to-tuple(filter({poll(_) is PromisePending}, promises))
 
-public defn call-system-async (program:String, args:Tuple<String>) -> Awaitable:
-  within promise = awaitable():
-    val process = Process(program, args)
-    let loop ():
-      match(state(process)):
-        (_:ProcessRunning):
-          pend(promise)
-          loop()
-        (r:ProcessDone):
-          resolve(promise, r)
-        (r:?):
-          reject(promise, Exception("%_" % [r])) 
 
-execute([call-system-async("sleep", ["sleep", "1"])])
+;==============================================================================
+; Example
+;==============================================================================
+defn example ():
+  ; Example: implementing an asynchronous version of call-system using
+  ;          an `awaitable context`
+  defn call-system-async (program:String, args:Tuple<String>) -> Awaitable:
+    within promise = awaitable():
+      val process = Process(program, args)
+      let loop ():
+        match(state(process)):
+          (_:ProcessRunning):
+            pend(promise)
+            loop()
+          (r:ProcessDone):
+            resolve(promise, r)
+          (r:?):
+            reject(promise, Exception("%_" % [r])) 
+
+  ; the async code can be run using a synchronous interface
+  defn sleep (n:Int):
+    call-system-async("sleep", ["sleep", to-string(n)])
+
+  ; awaitables can be chained within async contexts
+  defn chained (): 
+    within await = async():
+      await(sleep(2))
+      await(sleep(2))
+
+  ; executing the awaitables concurrently. Notice this code only takes around four seconds
+  ; to complete instead of 8. 
+  execute([
+    sleep(4),
+    chained()
+  )])
