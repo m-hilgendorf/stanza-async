@@ -1,0 +1,2 @@
+package stz/promise      defined-in "promise.stanza"
+package stz/promise/test defined-in "tests.stanza"

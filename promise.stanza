@@ -1,0 +1,62 @@
+defpackage stz/promise:
+  import core
+  import collections
+
+public deftype PromiseState
+
+public defstruct PromiseResolved <: PromiseState:
+  value:?
+
+public defstruct PromiseRejected <: PromiseState:
+  error:Exception
+
+public defstruct PromisePending <: PromiseState
+
+defmethod print (o:OutputStream, p:PromiseState):
+  match(p):
+    (_:PromisePending):  print(o, "Promise Pending")
+    (r:PromiseResolved): print(o, "Resolved: %_" % [value(r)])
+    (r:PromiseRejected): print(o, "Rejected: %_" % [error(r)])
+
+public defstruct Promise:
+  coroutine: Coroutine<False, PromiseState>
+
+public defn resolve (p:Promise, value:?) -> Void:
+  break(coroutine(p), PromiseResolved(value))
+
+public defn reject (p:Promise, error:Exception) -> Void:
+  break(coroutine(p), PromiseRejected(error))
+
+public defn poll (p:Promise) -> PromiseState:
+  resume(coroutine(p), false)
+
+public defn pend (p:Promise) -> False:
+  suspend(coroutine(p), PromisePending())
+
+public defn make-promise (body:(Promise) -> ?) -> Promise:
+  defn driver (coro:Coroutine<False, PromiseState>, arg):
+    val promise = Promise(coro)
+    try:
+      pend(promise)
+      resolve(promise, body(promise))
+    catch (error:Exception):
+      reject(promise, error)
+  Promise(Coroutine<False, PromiseState>(driver))
+defn execute (promises:Seqable<Promise>):
+  var promises* = to-tuple(promises)
+  while not empty?(promises*):
+    promises* = to-tuple(filter({poll(_) is PromisePending}, promises*))
+
+public defn async (body: ( (Promise) -> ? ) -> ?) -> Promise:
+  within promise = make-promise():
+    defn await (other-promise:Promise) -> ?:
+      let loop ():
+        match(poll(other-promise)):
+          (_:PromisePending):
+            pend(promise)
+            loop()
+          (r:PromiseRejected):
+            reject(promise, error(r))
+          (r:PromiseResolved):
+            value(r)
+    body(await)
